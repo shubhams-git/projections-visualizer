@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import {
   AppBar, Toolbar, Container, Typography, Paper, Grid, Stack, Divider,
   Button, IconButton, Tooltip, Chip, Snackbar, Alert,
@@ -382,7 +382,6 @@ export default function App() {
 
   const [snack, setSnack] = useState({ open: false, msg: "", sev: "info" });
   const [helpOpen, setHelpOpen] = useState(false);
-  const [tourRun, setTourRun] = useState(false);
   const tourRef = useRef(null);
 
   async function readJSONFile(file, onData, expectation) {
@@ -460,9 +459,7 @@ export default function App() {
     { element: "[data-tour='chart']", popover: { title: "Interact with the chart", description: "Hover for tooltips. Colors match across Old (solid) and Proj (dashed)." } }
   ]), []);
 
-  useEffect(() => {
-    if (!tourRun) return;
-    // Prevent re-init if already running
+  const startTour = useCallback(() => {
     if (tourRef.current) {
       try { tourRef.current.destroy(); } catch {}
       tourRef.current = null;
@@ -479,16 +476,15 @@ export default function App() {
     });
     tourRef.current = d;
     d.drive();
-    // Immediately reset flag so re-renders won't retrigger
-    setTourRun(false);
-    // Cleanup on unmount
-    return () => {
-      if (tourRef.current) {
-        try { tourRef.current.destroy(); } catch {}
-        tourRef.current = null;
-      }
-    };
-  }, [tourRun, tourSteps]);
+  }, [tourSteps]);
+
+  // Ensure driver is cleaned up on component unmount
+  useEffect(() => () => {
+    if (tourRef.current) {
+      try { tourRef.current.destroy(); } catch {}
+      tourRef.current = null;
+    }
+  }, []);
 
   return (
     <>
@@ -709,7 +705,7 @@ export default function App() {
               <Typography variant="body2">Upload both <code>data.json</code> and <code>projections.json</code> to render the chart.</Typography>
               <Stack direction="row" justifyContent="center" spacing={1}>
                 <Button variant="contained" onClick={() => setHelpOpen(true)}>View help</Button>
-                <Button variant="outlined" onClick={() => setTourRun(true)}>Start guided tour</Button>
+                <Button variant="outlined" onClick={startTour}>Start guided tour</Button>
               </Stack>
             </Stack>
           ) : (
@@ -793,7 +789,7 @@ export default function App() {
       <HelpDialog
         open={helpOpen}
         onClose={() => setHelpOpen(false)}
-        onStartTour={() => { setHelpOpen(false); setTourRun(true); }}
+        onStartTour={() => { setHelpOpen(false); startTour(); }}
       />
     </>
   );
