@@ -20,7 +20,7 @@ const theme = createTheme({
     error: { main: '#ef5350' },
     info: { main: '#64b5f6' }
   },
-  shape: { borderRadius: 14 },
+  shape: { borderRadius: 16 },
   typography: {
     fontFamily: [
       'Inter',
@@ -33,6 +33,7 @@ const theme = createTheme({
       '"Helvetica Neue"',
       'Arial'
     ].join(','),
+    h4: { fontWeight: 800, letterSpacing: 0.2 },
     h6: { fontWeight: 800, letterSpacing: 0.2 },
     subtitle1: { fontWeight: 600 }
   },
@@ -42,6 +43,18 @@ const theme = createTheme({
     ...Array(23).fill('0px 6px 22px rgba(0,0,0,0.35)')
   ],
   components: {
+    MuiAppBar: {
+      styleOverrides: {
+        root: ({ theme }) => ({
+          backgroundImage: 'none',
+          borderBottom: `1px solid ${theme.palette.divider}`,
+          backdropFilter: 'blur(10px) saturate(1.1)'
+        })
+      }
+    },
+    MuiContainer: {
+      defaultProps: { maxWidth: 'xl' }
+    },
     MuiPaper: {
       defaultProps: { elevation: 1 },
       styleOverrides: {
@@ -49,6 +62,25 @@ const theme = createTheme({
           backgroundImage: 'none',
           backdropFilter: 'saturate(1.1) blur(6px)',
           border: `1px solid ${theme.palette.divider}`
+        })
+      }
+    },
+    MuiButton: {
+      styleOverrides: {
+        root: ({ theme }) => ({
+          textTransform: 'none',
+          fontWeight: 700,
+          borderRadius: 12
+        }),
+        contained: ({ theme }) => ({
+          boxShadow: '0 10px 30px rgba(0,0,0,0.35)'
+        })
+      }
+    },
+    MuiChip: {
+      styleOverrides: {
+        root: ({ theme }) => ({
+          borderRadius: 10
         })
       }
     },
