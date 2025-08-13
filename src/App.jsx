@@ -19,6 +19,8 @@ import {
 import { driver } from "driver.js";
 import "driver.js/dist/driver.css";
 import { alpha, useTheme, keyframes } from "@mui/material/styles";
+import { Logout as LogoutIcon } from '@mui/icons-material';
+
 
 import {
   ResponsiveContainer, LineChart, Line, Area, XAxis, YAxis, Tooltip as RTooltip,
@@ -434,6 +436,11 @@ export default function App() {
   const [helpOpen, setHelpOpen] = useState(false);
   const tourRef = useRef(null);
 
+  const handleLogout = () => {
+    localStorage.removeItem('pv_auth');
+    window.location.reload(); // Simple way to return to login
+  };
+
   async function readJSONFile(file, onData, expectation) {
     try {
       const text = await file.text();
@@ -657,6 +664,11 @@ export default function App() {
             <Tooltip title="Help and guided tour (or press ?)">
               <IconButton size="large" color="inherit" onClick={() => setHelpOpen(true)}>
                 <HelpOutlineIcon />
+              </IconButton>
+            </Tooltip>
+            <Tooltip title="Logout">
+              <IconButton size="large" color="inherit" onClick={handleLogout}>
+                <LogoutIcon />
               </IconButton>
             </Tooltip>
           </Stack>

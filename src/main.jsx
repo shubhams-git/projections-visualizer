@@ -1,6 +1,6 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import App from './App.jsx'
+import ProtectedApp from './components/ProtectedApp.jsx' // Changed from App to ProtectedApp
 
 import { CssBaseline, ThemeProvider, createTheme } from '@mui/material'
 import { alpha } from '@mui/material/styles'
@@ -114,9 +114,8 @@ const theme = createTheme({
 createRoot(document.getElementById('root')).render(
   <StrictMode>
     <ThemeProvider theme={theme}>
-      {/* Optional: add Inter via <link> in index.html for even nicer type */}
       <CssBaseline />
-      <App />
+      <ProtectedApp /> {/* Changed from <App /> */}
     </ThemeProvider>
   </StrictMode>
 )
