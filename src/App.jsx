@@ -21,7 +21,7 @@ import "driver.js/dist/driver.css";
 import { alpha, useTheme, keyframes } from "@mui/material/styles";
 
 import {
-  ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip as RTooltip,
+  ResponsiveContainer, LineChart, Line, Area, XAxis, YAxis, Tooltip as RTooltip,
   CartesianGrid, Legend
 } from "recharts";
 
@@ -101,9 +101,10 @@ function aggregateOldData(oldMonthly, freq) {
   return Object.values(bucketBy).sort((a, b) => labelComparator(freq)(a.label, b.label));
 }
 
-function projectionSeriesForKey(projectionsData, timeframeKey) {
-  if (!projectionsData || !projectionsData[timeframeKey]) return { freq: "monthly", rows: [] };
-  const rows = projectionsData[timeframeKey].map((d) => {
+function extractProjectionSeries(projections, timeframeKey) {
+  if (!projections) return { freq: "monthly", baseRows: [], goalRows: [] };
+
+  const buildRows = (arr) => (arr || []).map((d) => {
     if (d.month) return { label: d.month, ...d };
     if (d.quarter) return { label: d.quarter, ...d };
     return { label: String(d.year), ...d };
@@ -114,26 +115,56 @@ function projectionSeriesForKey(projectionsData, timeframeKey) {
     gross_profit: d.gross_profit ?? null,
     expenses: d.expenses ?? null,
   }));
-  const first = projectionsData[timeframeKey][0] || {};
-  const freq = first.month ? "monthly" : first.quarter ? "quarterly" : "annual";
-  rows.sort((a, b) => labelComparator(freq)(a.label, b.label));
-  return { freq, rows };
+
+  const baseInput = projections.projections_data?.[timeframeKey] || [];
+  const baseFirst = baseInput[0] || {};
+  const baseFreq = baseFirst.month ? "monthly" : baseFirst.quarter ? "quarterly" : baseInput.length ? "annual" : null;
+  const baseRows = buildRows(baseInput).sort((a, b) => labelComparator(baseFreq || "monthly")(a.label, b.label));
+
+  let goalRows = [];
+  // Make goal series visible for 1-year (first 12 months) and full 3-years selections
+  if (timeframeKey === "one_year_monthly" || timeframeKey === "three_years_monthly") {
+    const goalInput = projections.goal_based_projections?.three_years_monthly || [];
+    const sortedGoal = buildRows(goalInput).sort((a, b) => labelComparator("monthly")(a.label, b.label));
+    goalRows = timeframeKey === "one_year_monthly" ? sortedGoal.slice(0, 12) : sortedGoal;
+  }
+
+  return { freq: baseFreq || "monthly", baseRows, goalRows };
 }
 
-function buildChartRows(histRows, projRows, freq, datasetMode) {
+function buildChartRows(histRows, projRows, goalRows, freq) {
   const byLabel = new Map();
-  if (datasetMode === "old" || datasetMode === "both") {
-    for (const r of histRows) {
-      if (!byLabel.has(r.label)) byLabel.set(r.label, { label: r.label });
-      const row = byLabel.get(r.label);
-      for (const m of METRICS) row[`${m.key}_hist`] = r[m.key] ?? null;
-    }
+  for (const r of histRows) {
+    if (!byLabel.has(r.label)) byLabel.set(r.label, { label: r.label });
+    const row = byLabel.get(r.label);
+    for (const m of METRICS) row[`${m.key}_hist`] = r[m.key] ?? null;
   }
-  if (datasetMode === "proj" || datasetMode === "both") {
-    for (const r of projRows) {
-      if (!byLabel.has(r.label)) byLabel.set(r.label, { label: r.label });
-      const row = byLabel.get(r.label);
-      for (const m of METRICS) row[`${m.key}_proj`] = r[m.key] ?? null;
+  for (const r of projRows) {
+    if (!byLabel.has(r.label)) byLabel.set(r.label, { label: r.label });
+    const row = byLabel.get(r.label);
+    for (const m of METRICS) row[`${m.key}_proj`] = r[m.key] ?? null;
+  }
+  for (const r of goalRows || []) {
+    if (!byLabel.has(r.label)) byLabel.set(r.label, { label: r.label });
+    const row = byLabel.get(r.label);
+    for (const m of METRICS) row[`${m.key}_goal`] = r[m.key] ?? null;
+  }
+  // Compute goal vs projection band helpers per metric for clear separation when both exist
+  for (const row of byLabel.values()) {
+    for (const m of METRICS) {
+      const projVal = row[`${m.key}_proj`];
+      const goalVal = row[`${m.key}_goal`];
+      if (projVal != null && goalVal != null && isFinite(projVal) && isFinite(goalVal)) {
+        const minVal = Math.min(projVal, goalVal);
+        const diffVal = Math.abs(goalVal - projVal);
+        row[`${m.key}_band_min`] = minVal;
+        row[`${m.key}_band_span`] = diffVal;
+        row[`${m.key}_delta`] = goalVal - projVal;
+      } else {
+        row[`${m.key}_band_min`] = null;
+        row[`${m.key}_band_span`] = null;
+        row[`${m.key}_delta`] = null;
+      }
     }
   }
   return Array.from(byLabel.values()).sort((a, b) => labelComparator(freq)(a.label, b.label));
@@ -203,8 +234,9 @@ function MuiChartTooltip({ active, payload, label }) {
   const metricRows = METRICS.map((m) => {
     const oldVal = row[`${m.key}_hist`];
     const projVal = row[`${m.key}_proj`];
-    if (oldVal == null && projVal == null) return null;
-    return { key: m.key, label: m.label, color: COLOR_BY_METRIC[m.key], oldVal, projVal };
+    const goalVal = row[`${m.key}_goal`];
+    if (oldVal == null && projVal == null && goalVal == null) return null;
+    return { key: m.key, label: m.label, color: COLOR_BY_METRIC[m.key], oldVal, projVal, goalVal };
   }).filter(Boolean);
 
   return (
@@ -269,6 +301,18 @@ function MuiChartTooltip({ active, payload, label }) {
                       variant="outlined"
                     />
                   )}
+                  {m.goalVal != null && (
+                    <Chip
+                      size="small"
+                      label={`Goal: ${prettyNumber(m.goalVal)}`}
+                      sx={{
+                        bgcolor: alpha(m.color, 0.06),
+                        color: alpha('#fff',0.9),
+                        borderColor: alpha(m.color,0.5)
+                      }}
+                      variant="outlined"
+                    />
+                  )}
                 </Stack>
               </Stack>
             </Grid>
@@ -298,7 +342,7 @@ function HelpDialog({ open, onClose, onStartTour }) {
               Upload your historical monthly dataset and the projections generated by your engine. The app will aggregate and compare metrics across months, quarters, or years with interactive charts.
             </Typography>
             <Alert severity="info" variant="outlined">
-              You can switch between Old, Projections, or Both, and toggle specific metrics to declutter the visualization.
+              Toggle Old, Projections, and Goal independently. Use metric chips to declutter the visualization.
             </Alert>
           </Stack>
         )}
@@ -309,7 +353,8 @@ function HelpDialog({ open, onClose, onStartTour }) {
               <li>Upload <code>data.json</code> containing <code>{`{ old_data: [...] }`}</code>.</li>
               <li>Upload <code>projections.json</code> containing <code>{`{ projections_data: { ... } }`}</code>.</li>
               <li>Choose a timeframe (monthly, quarterly, annual views).</li>
-              <li>Use Show toggle to view Old, Projections, or Both.</li>
+              <li>Use Show toggle to show/hide Old, Projections, and Goal.</li>
+              <li>Goal is available for 1Y and 3Y monthly views.</li>
               <li>Toggle metrics to focus the chart.</li>
             </ol>
           </Stack>
@@ -337,6 +382,11 @@ function HelpDialog({ open, onClose, onStartTour }) {
     ],
     "ten_years_annual": [
       { "year": 2024, "revenue": 1680000, "net_profit": 264000, "gross_profit": 720000, "expenses": 1416000 }
+    ]
+  },
+  "goal_based_projections": {
+    "three_years_monthly": [
+      { "month": "2024-01", "revenue": 150000, "net_profit": 24000, "gross_profit": 64000, "expenses": 126000 }
     ]
   }
 }`}</pre>
@@ -375,7 +425,7 @@ export default function App() {
 
   const [timeframe, setTimeframe] = useState("one_year_monthly");
   theme.palette.mode // referencing theme to avoid unused warning
-  const [datasetMode, setDatasetMode] = useState("both");
+  const [datasetSelection, setDatasetSelection] = useState(["old", "proj", "goal"]);
   const [selected, setSelected] = useState({
     revenue: true, net_profit: true, gross_profit: true, expenses: true,
   });
@@ -414,7 +464,7 @@ export default function App() {
         setSnack({ open: true, msg: "projections.json must contain { projections_data: { ... } }", sev: "warning" });
         return;
       }
-      setProjections(json.projections_data);
+      setProjections(json);
       setSnack({ open: true, msg: `Loaded ${file.name}`, sev: "success" });
     }, "projections.json");
   }
@@ -440,23 +490,111 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const { freq, histRows, projRows, rows } = useMemo(() => {
+  const { freq, histRows, baseProjCount, goalCount, rows } = useMemo(() => {
     const tf = TIMEFRAMES.find((t) => t.key === timeframe) || TIMEFRAMES[0];
     const hist = oldData ? aggregateOldData(oldData, tf.freq) : [];
-    const projPack = projections ? projectionSeriesForKey(projections, timeframe) : { rows: [], freq: tf.freq };
-    const merged = buildChartRows(hist, projPack.rows, tf.freq, datasetMode);
-    return { freq: tf.freq, histRows: hist, projRows: projPack.rows, rows: merged };
-  }, [oldData, projections, timeframe, datasetMode]);
+    const projPack = projections ? extractProjectionSeries(projections, timeframe) : { baseRows: [], goalRows: [], freq: tf.freq };
+    const merged = buildChartRows(hist, projPack.baseRows, projPack.goalRows, tf.freq);
+    const baseProjCount = projPack.baseRows?.length || 0;
+    const goalCount = projPack.goalRows?.length || 0;
+    return { freq: tf.freq, histRows: hist, baseProjCount, goalCount, rows: merged };
+  }, [oldData, projections, timeframe]);
 
   const filesReady = !!oldData && !!projections;
+
+  // Auto-unselect Goal when current timeframe has no goal data
+  useEffect(() => {
+    if (!filesReady) return;
+    if (goalCount === 0 && datasetSelection.includes('goal')) {
+      setDatasetSelection((sel) => sel.filter((x) => x !== 'goal'));
+    }
+  }, [filesReady, goalCount, datasetSelection]);
+
+
+  // Respect user metric toggles without enforcing constraints based on dataset selection
+  const effectiveSelected = useMemo(() => selected, [selected]);
+
+  const bothProjAndGoal = useMemo(() => (
+    datasetSelection.includes('proj') && datasetSelection.includes('goal')
+  ), [datasetSelection]);
+
+  const onlySelectedMetricKey = useMemo(() => {
+    const selectedKeys = Object.entries(effectiveSelected)
+      .filter(([, v]) => !!v)
+      .map(([k]) => k);
+    return selectedKeys.length === 1 ? selectedKeys[0] : null;
+  }, [effectiveSelected]);
+
+  const SINGLE_METRIC_COLORS = useMemo(() => ({
+    old: '#FFC107', // vibrant golden for Old
+    goal: '#C792EA' // distinct purple for Goal
+  }), []);
+
+  // Compute which data keys are visible based on dataset selections and metric toggles
+  const visibleDataKeys = useMemo(() => {
+    const keys = [];
+    for (const m of METRICS) {
+      if (!effectiveSelected[m.key]) continue;
+      if (datasetSelection.includes('old')) keys.push(`${m.key}_hist`);
+      if (datasetSelection.includes('proj')) keys.push(`${m.key}_proj`);
+      if (datasetSelection.includes('goal')) keys.push(`${m.key}_goal`);
+    }
+    return keys;
+  }, [effectiveSelected, datasetSelection]);
+
+  // Filter chart rows to only periods that have at least one visible value
+  const filteredRows = useMemo(() => {
+    if (!rows || rows.length === 0) return [];
+    if (visibleDataKeys.length === 0) return [];
+    return rows.filter((r) => visibleDataKeys.some((k) => r[k] != null));
+  }, [rows, visibleDataKeys]);
+
+  // Compute Y-axis domain based on visible series only
+  const yDomain = useMemo(() => {
+    if (!filteredRows.length || !visibleDataKeys.length) return undefined;
+    let min = Number.POSITIVE_INFINITY;
+    let max = Number.NEGATIVE_INFINITY;
+    for (const row of filteredRows) {
+      for (const key of visibleDataKeys) {
+        const v = row[key];
+        if (v == null || isNaN(v)) continue;
+        if (v < min) min = v;
+        if (v > max) max = v;
+      }
+    }
+    if (!isFinite(min) || !isFinite(max)) return undefined;
+    const span = Math.max(1, max - min);
+    const pad = span * 0.06;
+    return [min - pad, max + pad];
+  }, [filteredRows, visibleDataKeys]);
+
+  // Detect metrics where goal and projection lines are identical (within epsilon)
+  const identicalGoalProjMetrics = useMemo(() => {
+    if (!(timeframe === 'three_years_monthly' || timeframe === 'one_year_monthly')) return [];
+    if (!datasetSelection.includes('proj') || !datasetSelection.includes('goal')) return [];
+    const epsilon = 1e-6;
+    const same = [];
+    for (const m of METRICS) {
+      if (!effectiveSelected[m.key]) continue;
+      let allEqual = true;
+      for (const r of filteredRows) {
+        const a = r[`${m.key}_proj`];
+        const b = r[`${m.key}_goal`];
+        if (a == null || b == null) continue;
+        if (Math.abs(a - b) > epsilon) { allEqual = false; break; }
+      }
+      if (allEqual) same.push(m.label);
+    }
+    return same;
+  }, [filteredRows, datasetSelection, effectiveSelected, timeframe]);
 
   const tourSteps = useMemo(() => ([
     { element: "[data-tour='upload-old']", popover: { title: "Upload historical data", description: "Start by uploading your monthly data.json with old_data." } },
     { element: "[data-tour='upload-proj']", popover: { title: "Upload projections", description: "Upload projections.json produced by your engine." } },
     { element: "[data-tour='timeframe']", popover: { title: "Pick a timeframe", description: "View monthly, quarterly, or annual aggregation." } },
-    { element: "[data-tour='show-toggle']", popover: { title: "Select dataset", description: "Switch between Old, Projections, or Both." } },
+    { element: "[data-tour='show-toggle']", popover: { title: "Select datasets", description: "Toggle Old, Projections, and Goal visibility independently." } },
     { element: "[data-tour='metrics']", popover: { title: "Toggle metrics", description: "Show or hide metrics to focus your analysis." } },
-    { element: "[data-tour='chart']", popover: { title: "Interact with the chart", description: "Hover for tooltips. Colors match across Old (solid) and Proj (dashed)." } }
+    { element: "[data-tour='chart']", popover: { title: "Interact with the chart", description: "Hover for tooltips. Colors match per metric. Goal uses a bolder sparse-dash style." } }
   ]), []);
 
   const startTour = useCallback(() => {
@@ -550,8 +688,8 @@ export default function App() {
 
         {/* KPI Cards */}
         <Grid container spacing={2} sx={{ mb: 3 }}>
-          {[{ key: 'hist', label: 'Historical points', value: histRows.length, icon: <TimelineIcon /> }, { key: 'proj', label: 'Projection points', value: projRows.length, icon: <TimelineIcon /> }, { key: 'metrics', label: 'Visible metrics', value: Object.values(selected).filter(Boolean).length, icon: <TuneIcon /> }].map((kpi) => (
-            <Grid item xs={12} sm={4} key={kpi.key}>
+          {[{ key: 'hist', label: 'Historical points', value: histRows.length, icon: <TimelineIcon /> }, { key: 'proj', label: 'Projection points', value: baseProjCount, icon: <TimelineIcon /> }, { key: 'goal', label: 'Goal points', value: goalCount, icon: <TimelineIcon /> }, { key: 'metrics', label: 'Visible metrics', value: Object.values(effectiveSelected).filter(Boolean).length, icon: <TuneIcon /> }].map((kpi) => (
+            <Grid item xs={12} sm={3} key={kpi.key}>
               <Paper sx={{ p: 2 }}>
                 <Stack direction="row" alignItems="center" spacing={1.5}>
                   <Avatar sx={{ width: 40, height: 40, bgcolor: alpha(theme.palette.primary.main, 0.12), border: `1px solid ${alpha(theme.palette.primary.main, 0.24)}` }}>
@@ -645,16 +783,15 @@ export default function App() {
               <Stack spacing={0.5}>
                 <Typography variant="caption" color="text.secondary" sx={{ pl: 0.5 }}>Show</Typography>
                 <ToggleButtonGroup
-                  value={datasetMode}
-                  exclusive
-                  onChange={(_, v) => v && setDatasetMode(v)}
+                  value={datasetSelection}
+                  onChange={(_, v) => v && setDatasetSelection(v)}
                   fullWidth
                   color="primary"
                   disabled={!filesReady}
                 >
-                  <ToggleButton value="old">Old only</ToggleButton>
-                  <ToggleButton value="proj">Projections only</ToggleButton>
-                  <ToggleButton value="both">Both</ToggleButton>
+                  <ToggleButton value="old">Old</ToggleButton>
+                  <ToggleButton value="proj">Projections</ToggleButton>
+                  <ToggleButton value="goal">Goal</ToggleButton>
                 </ToggleButtonGroup>
               </Stack>
             </Grid>
@@ -694,6 +831,8 @@ export default function App() {
                 </FormGroup>
               </Stack>
             </Grid>
+
+            
           </Grid>
         </Paper>
 
@@ -716,7 +855,13 @@ export default function App() {
                 </Typography>
                 <Stack direction="row" spacing={2}>
                   <Typography variant="caption">{histRows.length} historical points</Typography>
-                  <Typography variant="caption">{projRows.length} projection points</Typography>
+                  <Typography variant="caption">{baseProjCount} projections</Typography>
+                  {goalCount > 0 && <Typography variant="caption">{goalCount} goal</Typography>}
+                  {identicalGoalProjMetrics.length > 0 && (
+                    <Typography variant="caption" color="warning.main">
+                      Identical: {identicalGoalProjMetrics.join(', ')}
+                    </Typography>
+                  )}
                 </Stack>
               </Stack>
 
@@ -724,45 +869,112 @@ export default function App() {
 
               <Box sx={{ height: 460 }}>
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={rows} margin={{ top: 10, right: 24, bottom: 8, left: 0 }}>
+                  <LineChart data={filteredRows} margin={{ top: 10, right: 24, bottom: 8, left: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis dataKey="label" />
-                    <YAxis tickFormatter={(n) => prettyNumber(n)} width={90} />
+                    <YAxis tickFormatter={(n) => prettyNumber(n)} width={90} domain={yDomain} yAxisId="left" />
+                    <YAxis orientation="right" yAxisId="right" width={60} tickFormatter={(n) => prettyNumber(n)} hide />
                     <RTooltip content={<MuiChartTooltip />} />
                     <Legend />
 
-                    {METRICS.filter((m) => selected[m.key]).map((m) => (
+                    {/* Goal vs Projection band, rendered behind lines */}
+                    {((timeframe === 'three_years_monthly' || timeframe === 'one_year_monthly')
+                      && datasetSelection.includes('proj')
+                      && datasetSelection.includes('goal')) && (
+                      METRICS.filter((m) => effectiveSelected[m.key]).map((m) => (
+                        <>
+                          <Area
+                            key={`${m.key}-band-min`}
+                            type="monotone"
+                            dataKey={`${m.key}_band_min`}
+                            stackId={`${m.key}-band`}
+                            stroke="transparent"
+                            fill="transparent"
+                            isAnimationActive
+                            animationDuration={500}
+                          />
+                          <Area
+                            key={`${m.key}-band-span`}
+                            type="monotone"
+                            dataKey={`${m.key}_band_span`}
+                            stackId={`${m.key}-band`}
+                            name={`${m.label} (Goal−Proj gap)`}
+                            stroke="transparent"
+                            fill={alpha(COLOR_BY_METRIC[m.key], 0.18)}
+                            fillOpacity={0.18}
+                            isAnimationActive
+                            animationDuration={700}
+                            animationBegin={80}
+                          />
+                        </>
+                      ))
+                    )}
+
+                    {METRICS.filter((m) => effectiveSelected[m.key]).map((m) => (
                       <Line
                         key={`${m.key}-hist`}
                         type="monotone"
                         dataKey={`${m.key}_hist`}
                         name={`${m.label} (Old)`}
-                        stroke={COLOR_BY_METRIC[m.key]}
-                        strokeWidth={2}
+                        stroke={onlySelectedMetricKey === m.key ? SINGLE_METRIC_COLORS.old : COLOR_BY_METRIC[m.key]}
+                        strokeWidth={bothProjAndGoal && onlySelectedMetricKey === m.key ? 3.5 : 2}
                         dot={false}
-                        hide={datasetMode === "proj"}
+                        hide={!datasetSelection.includes('old')}
                         isAnimationActive
                         animationDuration={650}
                         animationEasing="ease-in-out"
+                        yAxisId="left"
                       />
                     ))}
-                    {METRICS.filter((m) => selected[m.key]).map((m) => (
+                    {METRICS.filter((m) => effectiveSelected[m.key]).map((m) => (
                       <Line
                         key={`${m.key}-proj`}
                         type="monotone"
                         dataKey={`${m.key}_proj`}
                         name={`${m.label} (Proj)`}
                         stroke={COLOR_BY_METRIC[m.key]}
-                        strokeWidth={2}
-                        strokeDasharray="6 6"
+                        strokeOpacity={0.85}
+                        strokeWidth={bothProjAndGoal && onlySelectedMetricKey === m.key ? 3.25 : 2}
+                        strokeDasharray={bothProjAndGoal && onlySelectedMetricKey === m.key ? "12 5" : "6 6"}
                         dot={false}
-                        hide={datasetMode === "old"}
+                        hide={!datasetSelection.includes('proj')}
                         isAnimationActive
                         animationDuration={850}
                         animationBegin={120}
                         animationEasing="ease-in-out"
+                        yAxisId="left"
                       />
                     ))}
+                    {(timeframe === 'three_years_monthly' || timeframe === 'one_year_monthly') && (
+                      METRICS.filter((m) => effectiveSelected[m.key]).map((m) => (
+                        <Line
+                          key={`${m.key}-goal`}
+                          type="monotone"
+                          dataKey={`${m.key}_goal`}
+                          name={`${m.label} (Goal)`}
+                          stroke={onlySelectedMetricKey === m.key ? SINGLE_METRIC_COLORS.goal : COLOR_BY_METRIC[m.key]}
+                          strokeWidth={bothProjAndGoal && onlySelectedMetricKey === m.key ? 3.25 : 2}
+                          strokeDasharray={bothProjAndGoal && onlySelectedMetricKey === m.key ? "3 10" : "4 8"}
+                          strokeOpacity={0.9}
+                          dot={false}
+                          activeDot={{ r: bothProjAndGoal && onlySelectedMetricKey === m.key ? 4.2 : 3.5, fill: (onlySelectedMetricKey === m.key ? SINGLE_METRIC_COLORS.goal : COLOR_BY_METRIC[m.key]), stroke: 'transparent' }}
+                          hide={!datasetSelection.includes('goal')}
+                          isAnimationActive
+                          animationDuration={900}
+                          animationBegin={140}
+                          animationEasing="ease-in-out"
+                          yAxisId="left"
+                        />
+                      ))
+                    )}
+                    {/* Optional delta lines on right axis to highlight goal−proj difference magnitude */}
+                    {false && ((timeframe === 'three_years_monthly' || timeframe === 'one_year_monthly')
+                      && datasetSelection.includes('proj')
+                      && datasetSelection.includes('goal')) && (
+                      METRICS.filter((m) => effectiveSelected[m.key]).map((m) => (
+                        <Line key={`${m.key}-delta`} />
+                      ))
+                    )}
                   </LineChart>
                 </ResponsiveContainer>
               </Box>
