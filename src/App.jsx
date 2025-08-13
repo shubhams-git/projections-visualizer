@@ -558,7 +558,7 @@ export default function App() {
 
   // Compute Y-axis domain based on visible series only
   const yDomain = useMemo(() => {
-    if (!filteredRows.length || !visibleDataKeys.length) return undefined;
+    if (!filteredRows.length || !visibleDataKeys.length) return ['auto', 'auto'];
     let min = Number.POSITIVE_INFINITY;
     let max = Number.NEGATIVE_INFINITY;
     for (const row of filteredRows) {
@@ -569,10 +569,20 @@ export default function App() {
         if (v > max) max = v;
       }
     }
-    if (!isFinite(min) || !isFinite(max)) return undefined;
+    if (!isFinite(min) || !isFinite(max)) return ['auto', 'auto'];
     const span = Math.max(1, max - min);
-    const pad = span * 0.06;
-    return [min - pad, max + pad];
+    
+    // If the span is too small relative to the values (less than 5% variation), use auto
+    if (span / Math.abs(max) < 0.05) return ['auto', 'auto'];
+    
+    const pad = span * 0.08;
+    const domainMin = Math.max(0, min - pad); // Don't go below 0 for financial data
+    const domainMax = max + pad;
+    
+    // Ensure we have a reasonable range for tick generation
+    if ((domainMax - domainMin) / domainMax < 0.1) return ['auto', 'auto'];
+    
+    return [domainMin, domainMax];
   }, [filteredRows, visibleDataKeys]);
 
   // Detect metrics where goal and projection lines are identical (within epsilon)
